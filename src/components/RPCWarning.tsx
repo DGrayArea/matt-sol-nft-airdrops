@@ -2,7 +2,11 @@ import { useState, useEffect } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { X, AlertTriangle, ExternalLink } from "lucide-react";
-import { getCurrentRPCProvider, checkDASSupport } from "@/lib/solana/config";
+import {
+  getCurrentRPCProvider,
+  checkDASSupport,
+  getActiveProviderName,
+} from "@/lib/solana/config";
 import { createConnection } from "@/lib/solana/config";
 
 export const RPCWarning = () => {
@@ -18,7 +22,8 @@ export const RPCWarning = () => {
       setDasSupported(supported);
 
       // Show warning if using public RPC or if DAS is not supported
-      if (rpcProvider.name === "Public Solana RPC" || !supported) {
+      const activeProvider = getActiveProviderName();
+      if (activeProvider === "Public Solana RPC" || !supported) {
         setShowWarning(true);
       }
     };
@@ -39,8 +44,8 @@ export const RPCWarning = () => {
       <AlertDescription className="text-amber-700 dark:text-amber-300">
         <div className="space-y-2">
           <p>
-            You're currently using the <strong>{rpcProvider.name}</strong> which
-            has:
+            You're currently using the{" "}
+            <strong>{getActiveProviderName()}</strong> which has:
           </p>
           <ul className="list-disc list-inside space-y-1 text-sm">
             <li>Rate limit: {rpcProvider.rateLimit}</li>

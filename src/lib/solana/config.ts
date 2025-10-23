@@ -1,22 +1,42 @@
 import { Connection, Commitment } from "@solana/web3.js";
 
-// RPC Configuration
+// RPC Configuration with automatic provider selection
+function getBestRPCEndpoint(): string {
+  // Priority order: Custom URL > Helius URL > Alchemy URL > Public
+  if (import.meta.env.VITE_SOLANA_RPC_URL) {
+    return import.meta.env.VITE_SOLANA_RPC_URL;
+  }
+
+  if (import.meta.env.VITE_HELIUS_KEY) {
+    return import.meta.env.VITE_HELIUS_KEY;
+  }
+
+  if (import.meta.env.VITE_ALCHEMY_KEY) {
+    return import.meta.env.VITE_ALCHEMY_KEY;
+  }
+
+  return "https://api.mainnet-beta.solana.com";
+}
+
 export const RPC_CONFIG = {
-  // Default to public RPC, but can be overridden with environment variables
-  endpoint:
-    import.meta.env.VITE_SOLANA_RPC_URL ||
-    "https://api.mainnet-beta.solana.com",
+  endpoint: getBestRPCEndpoint(),
   commitment:
     (import.meta.env.VITE_RPC_COMMITMENT as Commitment) || "confirmed",
   timeout: parseInt(import.meta.env.VITE_RPC_TIMEOUT || "30000"),
   network: import.meta.env.VITE_SOLANA_NETWORK || "mainnet-beta",
 };
 
-// Create a configured connection instance
+// Create a configured connection instance with rate limit handling
 export function createConnection(): Connection {
   return new Connection(RPC_CONFIG.endpoint, {
     commitment: RPC_CONFIG.commitment,
     confirmTransactionInitialTimeout: RPC_CONFIG.timeout,
+    // Add rate limit handling
+    httpHeaders: {
+      "User-Agent": "Solana-NFT-Distributor/1.0.0",
+    },
+    // Disable retry for rate limit issues
+    disableRetryOnRateLimit: false,
   });
 }
 
@@ -92,4 +112,12 @@ export function getCurrentRPCProvider() {
   if (endpoint.includes("alchemy")) return RPC_PROVIDERS.alchemy;
 
   return RPC_PROVIDERS.public;
+}
+
+// Get the active provider name for display
+export function getActiveProviderName(): string {
+  if (import.meta.env.VITE_SOLANA_RPC_URL) return "Custom RPC";
+  if (import.meta.env.VITE_HELIUS_KEY) return "Helius";
+  if (import.meta.env.VITE_ALCHEMY_KEY) return "Alchemy";
+  return "Public Solana RPC";
 }
