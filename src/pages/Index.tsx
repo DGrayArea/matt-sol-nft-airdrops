@@ -14,7 +14,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Send, Wallet, FileCheck, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -26,13 +32,15 @@ const Index = () => {
   const wallet = useWallet();
   const { connected } = wallet;
   const [addresses, setAddresses] = useState<string[]>([]);
-  const [nftType, setNftType] = useState<"regular" | "cnft">("regular");
+  const [nftType, setNftType] = useState<"regular" | "cnft">("cnft");
   const [selectedNFTs, setSelectedNFTs] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
 
   const handleSend = async () => {
     if (!connected) {
-      toast.error("Please connect your wallet first");
+      toast.error(
+        "Please connect your wallet to send NFTs. Test mode only allows previewing."
+      );
       return;
     }
 
@@ -42,9 +50,15 @@ const Index = () => {
     }
 
     if (selectedNFTs.length !== addresses.length) {
-      toast.error(
-        `Please select ${addresses.length} NFT${addresses.length !== 1 ? "s" : ""} (one per recipient)`
-      );
+      if (selectedNFTs.length < addresses.length) {
+        toast.error(
+          `You have ${addresses.length} addresses but only ${selectedNFTs.length} NFT${selectedNFTs.length !== 1 ? "s" : ""} selected. Please select one NFT per recipient.`
+        );
+      } else {
+        toast.error(
+          `You have ${selectedNFTs.length} NFT${selectedNFTs.length !== 1 ? "s" : ""} selected but only ${addresses.length} address${addresses.length !== 1 ? "es" : ""}. Please add more addresses or deselect some NFTs.`
+        );
+      }
       return;
     }
 
@@ -56,26 +70,55 @@ const Index = () => {
     try {
       const connection = createConnection();
 
-      let signature: string;
+      // Batch transfers based on transaction limits
+      const BATCH_SIZE = nftType === "cnft" ? 10 : 20; // cNFTs are more complex, fewer per batch
+      const batches = [];
 
-      if (nftType === "cnft") {
-        signature = await transferCompressedNFTs({
-          connection,
-          wallet,
-          nftMints: selectedNFTs,
-          recipients: addresses,
-        });
-      } else {
-        signature = await transferRegularNFTs({
-          connection,
-          wallet,
-          nftMints: selectedNFTs,
-          recipients: addresses,
-        });
+      for (let i = 0; i < selectedNFTs.length; i += BATCH_SIZE) {
+        const batchNFTs = selectedNFTs.slice(i, i + BATCH_SIZE);
+        const batchRecipients = addresses.slice(i, i + BATCH_SIZE);
+        batches.push({ nfts: batchNFTs, recipients: batchRecipients });
       }
 
+      const signatures: string[] = [];
+
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        toast.loading(
+          `Sending batch ${i + 1}/${batches.length} (${batch.nfts.length} NFTs)...`,
+          { id: toastId }
+        );
+
+        let signature: string;
+
+        if (nftType === "cnft") {
+          signature = await transferCompressedNFTs({
+            connection,
+            wallet,
+            nftMints: batch.nfts,
+            recipients: batch.recipients,
+          });
+        } else {
+          signature = await transferRegularNFTs({
+            connection,
+            wallet,
+            nftMints: batch.nfts,
+            recipients: batch.recipients,
+          });
+        }
+
+        signatures.push(signature);
+
+        // Small delay between batches to avoid rate limits
+        if (i < batches.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+
+      const batchInfo =
+        batches.length > 1 ? ` in ${batches.length} batches` : "";
       toast.success(
-        `Successfully sent ${selectedNFTs.length} NFT${selectedNFTs.length !== 1 ? "s" : ""}!`,
+        `Successfully sent ${selectedNFTs.length} NFT${selectedNFTs.length !== 1 ? "s" : ""}${batchInfo}!`,
         { id: toastId }
       );
 
@@ -182,27 +225,25 @@ const Index = () => {
             {/* NFT Type Selection */}
             <div className="space-y-2">
               <label className="text-sm font-medium">NFT Type</label>
-              <Tabs
+              <Select
                 value={nftType}
-                onValueChange={(v) => setNftType(v as "regular" | "cnft")}
+                onValueChange={(value) =>
+                  setNftType(value as "regular" | "cnft")
+                }
               >
-                <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="regular">Regular NFTs</TabsTrigger>
-                  <TabsTrigger value="cnft">Compressed NFTs</TabsTrigger>
-                </TabsList>
-                <TabsContent value="regular" className="mt-4">
-                  <p className="text-sm text-muted-foreground">
-                    Standard Solana NFTs using the Metaplex Token Metadata
-                    standard
-                  </p>
-                </TabsContent>
-                <TabsContent value="cnft" className="mt-4">
-                  <p className="text-sm text-muted-foreground">
-                    Compressed NFTs (cNFTs) using Metaplex Bubblegum - more
-                    cost-effective for large distributions
-                  </p>
-                </TabsContent>
-              </Tabs>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select NFT type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cnft">Compressed NFTs (cNFTs)</SelectItem>
+                  <SelectItem value="regular">Regular NFTs</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-sm text-muted-foreground">
+                {nftType === "cnft"
+                  ? "Compressed NFTs using Metaplex Bubblegum - more cost-effective for large distributions"
+                  : "Standard Solana NFTs using the Metaplex Token Metadata standard"}
+              </p>
             </div>
 
             {/* Address Input */}
@@ -246,41 +287,49 @@ const Index = () => {
         )}
 
         {/* NFT Selector */}
-        {addresses.length > 0 && (
-          <NFTSelector
-            addressCount={addresses.length}
-            nftType={nftType}
-            selectedNFTs={selectedNFTs}
-            onNFTsChange={setSelectedNFTs}
-          />
-        )}
+        <NFTSelector
+          addressCount={addresses.length}
+          nftType={nftType}
+          selectedNFTs={selectedNFTs}
+          onNFTsChange={setSelectedNFTs}
+        />
 
         {/* Send Button */}
         {addresses.length > 0 && (
-          <Button
-            onClick={handleSend}
-            disabled={
-              !connected ||
-              addresses.length === 0 ||
-              selectedNFTs.length !== addresses.length ||
-              sending
-            }
-            className="w-full gap-2 text-base py-6"
-            size="lg"
-          >
-            {sending ? (
-              <>
-                <Loader2 className="h-5 w-5 animate-spin" />
-                Sending...
-              </>
-            ) : (
-              <>
-                <Send className="h-5 w-5" />
-                Send {selectedNFTs.length}/{addresses.length} NFT
-                {addresses.length !== 1 ? "s" : ""}
-              </>
+          <div className="space-y-2">
+            {!connected && (
+              <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <p className="text-sm text-yellow-800">
+                  ⚠️ Test Mode: You can select and preview transfers, but actual
+                  sending requires a connected wallet.
+                </p>
+              </div>
             )}
-          </Button>
+            <Button
+              onClick={handleSend}
+              disabled={
+                addresses.length === 0 ||
+                selectedNFTs.length !== addresses.length ||
+                sending
+              }
+              className="w-full gap-2 text-base py-6"
+              size="lg"
+            >
+              {sending ? (
+                <>
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <Send className="h-5 w-5" />
+                  {connected ? "Send" : "Preview Send"} {selectedNFTs.length}/
+                  {addresses.length} NFT
+                  {addresses.length !== 1 ? "s" : ""}
+                </>
+              )}
+            </Button>
+          </div>
         )}
 
         {/* Info Cards */}

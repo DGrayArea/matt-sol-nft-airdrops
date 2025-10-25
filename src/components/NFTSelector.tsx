@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { Connection } from "@solana/web3.js";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { createConnection } from "@/lib/solana/config";
 import {
   Card,
@@ -38,12 +38,16 @@ export const NFTSelector = ({
   const [loading, setLoading] = useState(false);
   const [nfts, setNfts] = useState<NFTMetadata[]>([]);
 
+  // Test address with compressed NFTs for testing
+  const TEST_ADDRESS = "FoYErQY3Q3Un8e1FCeS4PhAeTMj4WeLkJBoXpve8oPj6";
+
   useEffect(() => {
     if (connected && publicKey) {
+      // Load NFTs from connected wallet
       loadNFTs();
     } else {
-      setNfts([]);
-      onNFTsChange([]);
+      // Load test NFTs when no wallet is connected
+      // loadTestNFTs();
     }
   }, [connected, publicKey, nftType]);
 
@@ -54,11 +58,16 @@ export const NFTSelector = ({
     try {
       const connection = createConnection();
 
+      console.log("🔍 Loading NFTs for type:", nftType);
+      console.log("🔗 Using RPC endpoint:", connection.rpcEndpoint);
+      console.log("👤 Loading from wallet:", publicKey.toString());
+
       const fetchedNFTs =
         nftType === "cnft"
           ? await fetchWalletCNFTs(connection, publicKey)
           : await fetchWalletNFTs(connection, publicKey);
 
+      console.log("📊 Fetched NFTs:", fetchedNFTs);
       setNfts(fetchedNFTs);
 
       if (fetchedNFTs.length === 0) {
@@ -67,12 +76,47 @@ export const NFTSelector = ({
         );
       } else {
         toast.success(
-          `Loaded ${fetchedNFTs.length} ${nftType === "cnft" ? "compressed" : "regular"} NFT${fetchedNFTs.length !== 1 ? "s" : ""}`
+          `Loaded ${fetchedNFTs.length} ${nftType === "cnft" ? "compressed" : "regular"} NFT${fetchedNFTs.length !== 1 ? "s" : ""} from your wallet`
         );
       }
     } catch (error) {
       console.error("Error loading NFTs:", error);
       toast.error("Failed to load NFTs. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadTestNFTs = async () => {
+    setLoading(true);
+    try {
+      const connection = createConnection();
+      const { PublicKey } = await import("@solana/web3.js");
+      const testPublicKey = new PublicKey(TEST_ADDRESS);
+
+      console.log("🔍 Loading test NFTs for type:", nftType);
+      console.log("🔗 Using RPC endpoint:", connection.rpcEndpoint);
+
+      const fetchedNFTs =
+        nftType === "cnft"
+          ? await fetchWalletCNFTs(connection, testPublicKey)
+          : await fetchWalletNFTs(connection, testPublicKey);
+
+      console.log("📊 Fetched NFTs:", fetchedNFTs);
+      setNfts(fetchedNFTs);
+
+      if (fetchedNFTs.length === 0) {
+        toast.info(
+          `No ${nftType === "cnft" ? "compressed" : "regular"} NFTs found in test address`
+        );
+      } else {
+        toast.success(
+          `Loaded ${fetchedNFTs.length} test ${nftType === "cnft" ? "compressed" : "regular"} NFT${fetchedNFTs.length !== 1 ? "s" : ""} from demo address`
+        );
+      }
+    } catch (error) {
+      console.error("Error loading test NFTs:", error);
+      toast.error("Failed to load test NFTs. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -85,8 +129,14 @@ export const NFTSelector = ({
     }
 
     if (nfts.length < addressCount) {
-      toast.error(
-        `Not enough NFTs. You need ${addressCount} but only have ${nfts.length}`
+      toast.warning(
+        `Only ${nfts.length} NFT${nfts.length !== 1 ? "s" : ""} available, but ${addressCount} addresses provided. Auto-selecting all available NFTs.`
+      );
+      // Auto-select all available NFTs
+      const autoSelected = nfts.map((nft) => nft.mint);
+      onNFTsChange(autoSelected);
+      toast.info(
+        `Auto-selected all ${nfts.length} available NFT${nfts.length !== 1 ? "s" : ""}. You can manually select more if you add more NFTs to your wallet.`
       );
       return;
     }
@@ -115,8 +165,11 @@ export const NFTSelector = ({
   if (!connected) {
     return (
       <Card className="border-border/50">
-        <CardContent className="flex items-center justify-center py-12 text-muted-foreground">
+        <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
           <p>Connect wallet to view your NFTs</p>
+          <p className="text-sm text-blue-600">
+            Or use test NFTs from demo address
+          </p>
         </CardContent>
       </Card>
     );
@@ -127,7 +180,9 @@ export const NFTSelector = ({
       <Card className="border-border/50">
         <CardContent className="flex flex-col items-center justify-center py-12 gap-3">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          <p className="text-muted-foreground">Loading your NFTs...</p>
+          <p className="text-muted-foreground">
+            {connected ? "Loading your NFTs..." : "Loading test NFTs..."}
+          </p>
         </CardContent>
       </Card>
     );
@@ -141,10 +196,16 @@ export const NFTSelector = ({
             <CardTitle className="flex items-center gap-2">
               <ImageIcon className="h-5 w-5 text-primary" />
               Select NFTs
+              {!connected && (
+                <Badge variant="secondary" className="text-xs">
+                  Test Mode
+                </Badge>
+              )}
             </CardTitle>
             <CardDescription>
-              Choose {addressCount > 0 ? addressCount : "your"} NFT
-              {addressCount !== 1 ? "s" : ""} to distribute
+              {connected
+                ? `Choose ${addressCount > 0 ? addressCount : "your"} NFT${addressCount !== 1 ? "s" : ""} to distribute`
+                : "Testing with demo NFTs from Foyer address"}
             </CardDescription>
           </div>
           {addressCount > 0 && (
@@ -161,6 +222,18 @@ export const NFTSelector = ({
       </CardHeader>
       <CardContent>
         <div className="space-y-4">
+          {/* Warning if more NFTs than addresses */}
+          {addressCount > 0 && nfts.length > addressCount && (
+            <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <p className="text-sm text-yellow-800">
+                ⚠️ You have {nfts.length} NFT{nfts.length !== 1 ? "s" : ""} but
+                only {addressCount} address{addressCount !== 1 ? "es" : ""}.
+                Only {addressCount} NFT{addressCount !== 1 ? "s" : ""} will be
+                sent.
+              </p>
+            </div>
+          )}
+
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">
               Selected: {selectedNFTs.length} /{" "}
@@ -192,56 +265,92 @@ export const NFTSelector = ({
                 </Button>
               </div>
             ) : (
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {nfts.map((nft) => {
-                  const isSelected = selectedNFTs.includes(nft.mint);
-                  return (
-                    <div
-                      key={nft.mint}
-                      onClick={() => toggleNFT(nft.mint)}
-                      className={`relative rounded-lg border-2 overflow-hidden cursor-pointer transition-all hover:scale-105 ${
-                        isSelected
-                          ? "border-primary shadow-lg"
-                          : "border-border/50 hover:border-primary/50"
-                      }`}
-                    >
-                      <div className="aspect-square bg-muted flex items-center justify-center overflow-hidden">
-                        {nft.image && nft.image !== "/placeholder.svg" ? (
-                          <img
-                            src={nft.image}
-                            alt={nft.name}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              e.currentTarget.style.display = "none";
-                              e.currentTarget.parentElement!.innerHTML =
-                                '<div class="flex items-center justify-center w-full h-full"><svg class="h-12 w-12 text-muted-foreground/50" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg></div>';
-                            }}
-                          />
-                        ) : (
-                          <ImageIcon className="h-12 w-12 text-muted-foreground/50" />
-                        )}
-                      </div>
-                      <div className="p-2 bg-card">
-                        <p className="text-xs font-medium truncate">
-                          {nft.name}
-                        </p>
-                        {nft.collection && (
-                          <Badge
-                            variant="secondary"
-                            className="text-[10px] mt-1"
-                          >
-                            {nft.collection}
-                          </Badge>
-                        )}
-                      </div>
-                      {isSelected && (
-                        <div className="absolute top-2 right-2 bg-primary rounded-full p-1">
-                          <Checkbox checked className="h-4 w-4 border-0" />
-                        </div>
-                      )}
-                    </div>
+              <div className="space-y-6">
+                {(() => {
+                  // Group NFTs by collection
+                  const groupedNFTs = nfts.reduce(
+                    (groups, nft) => {
+                      const collection = nft.collection || "Unnamed Collection";
+                      if (!groups[collection]) {
+                        groups[collection] = [];
+                      }
+                      groups[collection].push(nft);
+                      return groups;
+                    },
+                    {} as Record<string, typeof nfts>
                   );
-                })}
+
+                  return Object.entries(groupedNFTs).map(
+                    ([collection, collectionNFTs]) => (
+                      <div key={collection} className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-semibold text-foreground">
+                            {collection}
+                          </h3>
+                          <span className="text-xs text-muted-foreground">
+                            {collectionNFTs.length} NFT
+                            {collectionNFTs.length !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                          {collectionNFTs.map((nft) => {
+                            const isSelected = selectedNFTs.includes(nft.mint);
+                            return (
+                              <div
+                                key={nft.mint}
+                                onClick={() => toggleNFT(nft.mint)}
+                                className={`relative rounded-lg border-2 overflow-hidden cursor-pointer transition-all hover:scale-105 ${
+                                  isSelected
+                                    ? "border-primary shadow-lg"
+                                    : "border-border/50 hover:border-primary/50"
+                                }`}
+                              >
+                                <div className="aspect-square bg-muted flex items-center justify-center overflow-hidden">
+                                  {nft.image &&
+                                  nft.image !== "/placeholder.svg" ? (
+                                    <img
+                                      src={nft.image}
+                                      alt={nft.name}
+                                      className="w-full h-full object-cover"
+                                      onError={(e) => {
+                                        e.currentTarget.style.display = "none";
+                                        e.currentTarget.parentElement!.innerHTML =
+                                          '<div class="flex items-center justify-center w-full h-full"><svg class="h-12 w-12 text-muted-foreground/50" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg></div>';
+                                      }}
+                                    />
+                                  ) : (
+                                    <ImageIcon className="h-12 w-12 text-muted-foreground/50" />
+                                  )}
+                                </div>
+                                <div className="p-2 bg-card">
+                                  <p className="text-xs font-medium truncate">
+                                    {nft.name}
+                                  </p>
+                                  {nft.collection && (
+                                    <Badge
+                                      variant="secondary"
+                                      className="text-[10px] mt-1"
+                                    >
+                                      {nft.collection}
+                                    </Badge>
+                                  )}
+                                </div>
+                                {isSelected && (
+                                  <div className="absolute top-2 right-2 bg-primary rounded-full p-1">
+                                    <Checkbox
+                                      checked
+                                      className="h-4 w-4 border-0"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )
+                  );
+                })()}
               </div>
             )}
           </ScrollArea>

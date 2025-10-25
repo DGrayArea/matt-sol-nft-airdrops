@@ -2,24 +2,53 @@ import { Connection, Commitment } from "@solana/web3.js";
 
 // RPC Configuration with automatic provider selection
 function getBestRPCEndpoint(): string {
+  console.log("🔍 Environment variables check:", {
+    VITE_SOLANA_RPC_URL: import.meta.env.VITE_SOLANA_RPC_URL
+      ? "✅ Set"
+      : "❌ Not set",
+    VITE_HELIUS_KEY: import.meta.env.VITE_HELIUS_KEY ? "✅ Set" : "❌ Not set",
+    VITE_ALCHEMY_KEY: import.meta.env.VITE_ALCHEMY_KEY
+      ? "✅ Set"
+      : "❌ Not set",
+  });
+
   // Priority order: Custom URL > Helius URL > Alchemy URL > Public
   if (import.meta.env.VITE_SOLANA_RPC_URL) {
+    console.log("🎯 Using VITE_SOLANA_RPC_URL");
     return import.meta.env.VITE_SOLANA_RPC_URL;
   }
 
   if (import.meta.env.VITE_HELIUS_KEY) {
-    return import.meta.env.VITE_HELIUS_KEY;
+    console.log("🎯 Using VITE_HELIUS_KEY");
+    // Check if it's already a full URL or just an API key
+    if (import.meta.env.VITE_HELIUS_KEY.startsWith("http")) {
+      return import.meta.env.VITE_HELIUS_KEY;
+    } else {
+      // Construct Helius DAS API endpoint with API key
+      return `https://mainnet.helius-rpc.com/?api-key=${import.meta.env.VITE_HELIUS_KEY}`;
+    }
   }
 
   if (import.meta.env.VITE_ALCHEMY_KEY) {
-    return import.meta.env.VITE_ALCHEMY_KEY;
+    console.log("🎯 Using VITE_ALCHEMY_KEY");
+    // Check if it's already a full URL or just an API key
+    if (import.meta.env.VITE_ALCHEMY_KEY.startsWith("http")) {
+      return import.meta.env.VITE_ALCHEMY_KEY;
+    } else {
+      // Construct Alchemy endpoint with API key
+      return `https://solana-mainnet.g.alchemy.com/v2/${import.meta.env.VITE_ALCHEMY_KEY}`;
+    }
   }
 
+  console.log("⚠️ Falling back to public Solana RPC");
   return "https://api.mainnet-beta.solana.com";
 }
 
+const selectedEndpoint = getBestRPCEndpoint();
+console.log("🚀 Selected RPC endpoint:", selectedEndpoint);
+
 export const RPC_CONFIG = {
-  endpoint: getBestRPCEndpoint(),
+  endpoint: selectedEndpoint,
   commitment:
     (import.meta.env.VITE_RPC_COMMITMENT as Commitment) || "confirmed",
   timeout: parseInt(import.meta.env.VITE_RPC_TIMEOUT || "30000"),
@@ -111,13 +140,27 @@ export function getCurrentRPCProvider() {
   if (endpoint.includes("quiknode")) return RPC_PROVIDERS.quicknode;
   if (endpoint.includes("alchemy")) return RPC_PROVIDERS.alchemy;
 
+  // Check if custom RPC supports DAS (most premium providers do)
+  if (import.meta.env.VITE_SOLANA_RPC_URL) {
+    return {
+      name: "Custom RPC",
+      endpoint: endpoint,
+      dasSupport: true, // Assume custom RPCs support DAS
+      rateLimit: "High",
+      cost: "Unknown",
+    };
+  }
+
   return RPC_PROVIDERS.public;
 }
 
 // Get the active provider name for display
 export function getActiveProviderName(): string {
+  const endpoint = RPC_CONFIG.endpoint;
+
+  if (endpoint.includes("helius")) return "Helius";
+  if (endpoint.includes("alchemy")) return "Alchemy";
+  if (endpoint.includes("quiknode")) return "QuickNode";
   if (import.meta.env.VITE_SOLANA_RPC_URL) return "Custom RPC";
-  if (import.meta.env.VITE_HELIUS_KEY) return "Helius";
-  if (import.meta.env.VITE_ALCHEMY_KEY) return "Alchemy";
   return "Public Solana RPC";
 }

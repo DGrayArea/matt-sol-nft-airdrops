@@ -37,9 +37,19 @@ export async function fetchWalletNFTs(
   walletAddress: PublicKey
 ): Promise<NFTMetadata[]> {
   try {
-    // Use Helius DAS API for better performance and rate limit handling
+    // Always use Helius for DAS API calls (only Helius supports getAssetsByOwner)
+    const heliusUrl = import.meta.env.VITE_HELIUS_KEY;
+
+    if (!heliusUrl) {
+      throw new Error(
+        "Helius API key not configured. DAS API requires VITE_HELIUS_KEY to be set."
+      );
+    }
+
+    console.log("🔗 Using Helius DAS endpoint:", heliusUrl);
+
     const response = await withRateLimit(async () => {
-      return await fetch(connection.rpcEndpoint, {
+      return await fetch(heliusUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -52,6 +62,19 @@ export async function fetchWalletNFTs(
             ownerAddress: walletAddress.toString(),
             page: 1,
             limit: 1000,
+            sortBy: {
+              sortBy: "created",
+              sortDirection: "asc",
+            },
+            options: {
+              showUnverifiedCollections: false,
+              showCollectionMetadata: false,
+              showGrandTotal: false,
+              showFungible: false,
+              showNativeBalance: false,
+              showInscription: false,
+              showZeroBalance: false,
+            },
           },
         }),
       });
@@ -92,9 +115,19 @@ export async function fetchWalletCNFTs(
   walletAddress: PublicKey
 ): Promise<NFTMetadata[]> {
   try {
-    // Use Helius DAS API for compressed NFTs
+    // Always use Helius for DAS API calls (only Helius supports getAssetsByOwner)
+    const heliusUrl = import.meta.env.VITE_HELIUS_KEY;
+
+    if (!heliusUrl) {
+      throw new Error(
+        "Helius API key not configured. DAS API requires VITE_HELIUS_KEY to be set."
+      );
+    }
+
+    console.log("🔗 Using Helius DAS endpoint:", heliusUrl);
+
     const response = await withRateLimit(async () => {
-      return await fetch(connection.rpcEndpoint, {
+      return await fetch(heliusUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -107,6 +140,19 @@ export async function fetchWalletCNFTs(
             ownerAddress: walletAddress.toString(),
             page: 1,
             limit: 1000,
+            sortBy: {
+              sortBy: "created",
+              sortDirection: "asc",
+            },
+            options: {
+              showUnverifiedCollections: false,
+              showCollectionMetadata: false,
+              showGrandTotal: false,
+              showFungible: false,
+              showNativeBalance: false,
+              showInscription: false,
+              showZeroBalance: false,
+            },
           },
         }),
       });
@@ -148,9 +194,19 @@ export async function fetchAllWalletNFTs(
   walletAddress: PublicKey
 ): Promise<NFTMetadata[]> {
   try {
-    // Use Helius DAS API to fetch all assets at once
+    // Always use Helius for DAS API calls (only Helius supports getAssetsByOwner)
+    const heliusUrl = import.meta.env.VITE_HELIUS_KEY;
+
+    if (!heliusUrl) {
+      throw new Error(
+        "Helius API key not configured. DAS API requires VITE_HELIUS_KEY to be set."
+      );
+    }
+
+    console.log("🔗 Using Helius DAS endpoint:", heliusUrl);
+
     const response = await withRateLimit(async () => {
-      return await fetch(connection.rpcEndpoint, {
+      return await fetch(heliusUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -163,6 +219,19 @@ export async function fetchAllWalletNFTs(
             ownerAddress: walletAddress.toString(),
             page: 1,
             limit: 1000,
+            sortBy: {
+              sortBy: "created",
+              sortDirection: "asc",
+            },
+            options: {
+              showUnverifiedCollections: false,
+              showCollectionMetadata: false,
+              showGrandTotal: false,
+              showFungible: false,
+              showNativeBalance: false,
+              showInscription: false,
+              showZeroBalance: false,
+            },
           },
         }),
       });
