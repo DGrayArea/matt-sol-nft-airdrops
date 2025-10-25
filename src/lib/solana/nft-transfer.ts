@@ -176,12 +176,58 @@ interface AssetData {
   };
 }
 
+// Helper function to extract asset data from cached NFT metadata
+function extractAssetDataFromMetadata(
+  nftMetadata: any[],
+  nftMints: string[]
+): Record<string, any> {
+  const assetDataMap: Record<string, any> = {};
+
+  nftMints.forEach((mint) => {
+    const nft = nftMetadata.find((n) => n.mint === mint || n.id === mint);
+    if (nft && nft.fullAssetData) {
+      assetDataMap[mint] = nft.fullAssetData;
+    }
+  });
+
+  console.log(
+    `📦 Extracted ${Object.keys(assetDataMap).length} assets from cached metadata`
+  );
+  return assetDataMap;
+}
+
+// Helper function to extract proofs from cached NFT metadata
+function extractProofsFromMetadata(
+  nftMetadata: any[],
+  nftMints: string[]
+): Record<string, any> {
+  const proofMap: Record<string, any> = {};
+
+  nftMints.forEach((mint) => {
+    const nft = nftMetadata.find((n) => n.mint === mint || n.id === mint);
+    if (nft && nft.fullAssetData && nft.fullAssetData.proof) {
+      proofMap[mint] = {
+        id: mint,
+        proof: nft.fullAssetData.proof,
+        tree_id: nft.fullAssetData.compression?.tree,
+        leaf_id: nft.fullAssetData.compression?.leaf_id,
+      };
+    }
+  });
+
+  console.log(
+    `🎉 Extracted ${Object.keys(proofMap).length} proofs from cached metadata`
+  );
+  return proofMap;
+}
+
 export async function transferCompressedNFTs({
   connection,
   wallet,
   nftMints,
   recipients,
-}: TransferNFTParams): Promise<string> {
+  nftMetadata, // Add optional NFT metadata with full asset data
+}: TransferNFTParams & { nftMetadata?: any[] }): Promise<string> {
   if (!wallet.publicKey || !wallet.signTransaction) {
     throw new Error("Wallet not connected");
   }
@@ -193,17 +239,85 @@ export async function transferCompressedNFTs({
   const transaction = new Transaction();
   const fromPubkey = wallet.publicKey;
 
+  // Check if we have full asset data from the initial fetch
+  const hasFullAssetData =
+    nftMetadata &&
+    nftMetadata.length > 0 &&
+    nftMetadata.some((nft) => nft.fullAssetData);
+
+  // Check if proofs are also available in cached data
+  const hasCachedProofs =
+    hasFullAssetData && nftMetadata.some((nft) => nft.fullAssetData?.proof);
+
+  if (hasFullAssetData) {
+    console.log(
+      `✅ Using cached asset data from initial fetch for ${nftMints.length} cNFTs`
+    );
+
+    if (hasCachedProofs) {
+      console.log(
+        `🎉 Proofs also available in cached data - zero additional API calls needed!`
+      );
+    } else {
+      console.log(`⚠️ Proofs not in cached data, will fetch via batch API`);
+    }
+  } else {
+    console.log(`🔄 Batch fetching data for ${nftMints.length} cNFTs...`);
+
+    // Show progress for large batches
+    if (nftMints.length > 10) {
+      console.log(
+        `⏳ This may take a moment for ${nftMints.length} NFTs to avoid rate limits...`
+      );
+    }
+  }
+
+  // Use cached data if available, otherwise fetch via batch APIs
+  const [assetDataMap, assetProofMap] = hasFullAssetData
+    ? await Promise.all([
+        // Extract asset data from cached metadata
+        Promise.resolve(extractAssetDataFromMetadata(nftMetadata!, nftMints)),
+        // Extract proofs from cached data if available, otherwise fetch
+        hasCachedProofs
+          ? Promise.resolve(extractProofsFromMetadata(nftMetadata!, nftMints))
+          : fetchMultipleAssetProofs(connection, nftMints),
+      ])
+    : await Promise.all([
+        fetchMultipleAssetData(connection, nftMints),
+        fetchMultipleAssetProofs(connection, nftMints),
+      ]);
+
+  console.log(`✅ Fetched data for ${Object.keys(assetDataMap).length} assets`);
+  console.log(
+    `✅ Fetched proofs for ${Object.keys(assetProofMap).length} assets`
+  );
+
+  // Check if we got all the data we need
+  const missingData = nftMints.filter((id) => !assetDataMap[id]);
+  const missingProofs = nftMints.filter((id) => !assetProofMap[id]);
+
+  if (missingData.length > 0) {
+    console.warn(
+      `⚠️ Missing data for ${missingData.length} assets:`,
+      missingData
+    );
+  }
+  if (missingProofs.length > 0) {
+    console.warn(
+      `⚠️ Missing proofs for ${missingProofs.length} assets:`,
+      missingProofs
+    );
+  }
+
   // Process each cNFT transfer
   for (let i = 0; i < nftMints.length; i++) {
     const assetId = nftMints[i];
     const toPubkey = new PublicKey(recipients[i]);
 
     try {
-      // Fetch asset data and proof using DAS API
-      const [assetData, assetProof] = await Promise.all([
-        fetchAssetData(connection, assetId),
-        fetchAssetProof(connection, assetId),
-      ]);
+      // Get pre-fetched asset data and proof
+      const assetData = assetDataMap[assetId];
+      const assetProof = assetProofMap[assetId];
 
       if (!assetData || !assetProof) {
         throw new Error(`Failed to fetch data for asset ${assetId}`);
@@ -324,12 +438,14 @@ export async function transferCompressedNFTs({
   return signature;
 }
 
-// Helper function to fetch asset data using DAS API
-async function fetchAssetData(
+// Helper function to fetch multiple asset data using Helius getAssetBatch API
+async function fetchMultipleAssetData(
   connection: Connection,
-  assetId: string
-): Promise<AssetData | null> {
+  assetIds: string[]
+): Promise<Record<string, AssetData>> {
   try {
+    console.log(`🔄 Using Helius getAssetBatch for ${assetIds.length} assets`);
+
     const response = await fetch(connection.rpcEndpoint, {
       method: "POST",
       headers: {
@@ -337,28 +453,48 @@ async function fetchAssetData(
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
-        id: "asset-data",
-        method: "getAsset",
+        id: "batch-asset-data",
+        method: "getAssetBatch",
         params: {
-          id: assetId,
+          ids: assetIds,
         },
       }),
     });
 
     const { result } = await response.json();
-    return result;
+    console.log("📊 getAssetBatch response:", {
+      success: result?.length || 0,
+      total: assetIds.length,
+      failed: assetIds.length - (result?.length || 0),
+    });
+
+    // Convert array to object keyed by asset ID
+    const assetDataMap: Record<string, AssetData> = {};
+    if (result && Array.isArray(result)) {
+      result.forEach((asset: AssetData) => {
+        if (asset && asset.id) {
+          assetDataMap[asset.id] = asset;
+        }
+      });
+    }
+
+    return assetDataMap;
   } catch (error) {
-    console.error("Error fetching asset data:", error);
-    return null;
+    console.error("Error fetching batch asset data:", error);
+    return {};
   }
 }
 
-// Helper function to fetch asset proof using DAS API
-async function fetchAssetProof(
+// Helper function to fetch multiple asset proofs using Helius getAssetProofBatch API
+async function fetchMultipleAssetProofs(
   connection: Connection,
-  assetId: string
-): Promise<AssetProof | null> {
+  assetIds: string[]
+): Promise<Record<string, any>> {
   try {
+    console.log(
+      `🔄 Using Helius getAssetProofBatch for ${assetIds.length} assets`
+    );
+
     const response = await fetch(connection.rpcEndpoint, {
       method: "POST",
       headers: {
@@ -366,18 +502,34 @@ async function fetchAssetProof(
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
-        id: "asset-proof",
-        method: "getAssetProof",
+        id: "batch-asset-proofs",
+        method: "getAssetProofBatch",
         params: {
-          id: assetId,
+          ids: assetIds,
         },
       }),
     });
 
     const { result } = await response.json();
-    return result;
+    console.log("📊 getAssetProofBatch response:", {
+      success: result?.length || 0,
+      total: assetIds.length,
+      failed: assetIds.length - (result?.length || 0),
+    });
+
+    // Convert array to object keyed by asset ID
+    const proofMap: Record<string, any> = {};
+    if (result && Array.isArray(result)) {
+      result.forEach((proof: any) => {
+        if (proof && proof.id) {
+          proofMap[proof.id] = proof;
+        }
+      });
+    }
+
+    return proofMap;
   } catch (error) {
-    console.error("Error fetching asset proof:", error);
-    return null;
+    console.error("Error fetching batch asset proofs:", error);
+    return {};
   }
 }

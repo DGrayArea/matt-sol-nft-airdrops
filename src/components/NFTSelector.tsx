@@ -26,6 +26,7 @@ interface NFTSelectorProps {
   nftType: "regular" | "cnft";
   selectedNFTs: string[];
   onNFTsChange: (nfts: string[]) => void;
+  onNFTDataChange?: (nfts: NFTMetadata[]) => void; // Callback to expose full NFT data
 }
 
 export const NFTSelector = ({
@@ -33,10 +34,18 @@ export const NFTSelector = ({
   nftType,
   selectedNFTs,
   onNFTsChange,
+  onNFTDataChange,
 }: NFTSelectorProps) => {
   const { connected, publicKey } = useWallet();
   const [loading, setLoading] = useState(false);
   const [nfts, setNfts] = useState<NFTMetadata[]>([]);
+
+  // Expose NFT data to parent component
+  useEffect(() => {
+    if (onNFTDataChange && nfts.length > 0) {
+      onNFTDataChange(nfts);
+    }
+  }, [nfts, onNFTDataChange]);
 
   // Test address with compressed NFTs for testing
   const TEST_ADDRESS = "FoYErQY3Q3Un8e1FCeS4PhAeTMj4WeLkJBoXpve8oPj6";

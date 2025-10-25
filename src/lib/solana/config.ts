@@ -12,14 +12,9 @@ function getBestRPCEndpoint(): string {
       : "❌ Not set",
   });
 
-  // Priority order: Custom URL > Helius URL > Alchemy URL > Public
-  if (import.meta.env.VITE_SOLANA_RPC_URL) {
-    console.log("🎯 Using VITE_SOLANA_RPC_URL");
-    return import.meta.env.VITE_SOLANA_RPC_URL;
-  }
-
+  // Priority order: Helius URL > Custom URL > Alchemy URL > Public
   if (import.meta.env.VITE_HELIUS_KEY) {
-    console.log("🎯 Using VITE_HELIUS_KEY");
+    console.log("🎯 Using VITE_HELIUS_KEY (default)");
     // Check if it's already a full URL or just an API key
     if (import.meta.env.VITE_HELIUS_KEY.startsWith("http")) {
       return import.meta.env.VITE_HELIUS_KEY;
@@ -27,6 +22,11 @@ function getBestRPCEndpoint(): string {
       // Construct Helius DAS API endpoint with API key
       return `https://mainnet.helius-rpc.com/?api-key=${import.meta.env.VITE_HELIUS_KEY}`;
     }
+  }
+
+  if (import.meta.env.VITE_SOLANA_RPC_URL) {
+    console.log("🎯 Using VITE_SOLANA_RPC_URL");
+    return import.meta.env.VITE_SOLANA_RPC_URL;
   }
 
   if (import.meta.env.VITE_ALCHEMY_KEY) {

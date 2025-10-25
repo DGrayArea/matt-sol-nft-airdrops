@@ -10,6 +10,8 @@ export interface NFTMetadata {
   collection?: string;
   uri?: string;
   isCompressed?: boolean;
+  // Store full asset data for compressed NFTs to avoid additional API calls
+  fullAssetData?: any;
 }
 
 // Rate limit helper function
@@ -160,6 +162,22 @@ export async function fetchWalletCNFTs(
 
     const { result } = await response.json();
 
+    console.log("🔍 getAssetsByOwner response structure:", {
+      totalItems: result?.items?.length || 0,
+      firstAsset: result?.items?.[0]
+        ? {
+            id: result.items[0].id,
+            compression: result.items[0].compression,
+            ownership: result.items[0].ownership,
+            hasProof: !!result.items[0].proof,
+            proofLength: result.items[0].proof?.length || 0,
+            hasTree: !!result.items[0].compression?.tree,
+            treeId: result.items[0].compression?.tree,
+            leafIndex: result.items[0].compression?.leaf_id,
+          }
+        : null,
+    });
+
     if (!result?.items) {
       return [];
     }
@@ -181,6 +199,8 @@ export async function fetchWalletCNFTs(
         ?.group_value,
       uri: asset.content?.json_uri,
       isCompressed: true,
+      // Store the full asset data for transfer operations
+      fullAssetData: asset,
     }));
   } catch (error) {
     console.error("Error fetching cNFTs:", error);

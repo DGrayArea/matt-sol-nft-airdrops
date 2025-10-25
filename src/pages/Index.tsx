@@ -35,6 +35,7 @@ const Index = () => {
   const [nftType, setNftType] = useState<"regular" | "cnft">("cnft");
   const [selectedNFTs, setSelectedNFTs] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
+  const [nftData, setNftData] = useState<any[]>([]); // Store full NFT data for transfers
 
   const handleSend = async () => {
     if (!connected) {
@@ -97,6 +98,7 @@ const Index = () => {
             wallet,
             nftMints: batch.nfts,
             recipients: batch.recipients,
+            nftMetadata: nftData, // Pass the full NFT metadata with cached asset data
           });
         } else {
           signature = await transferRegularNFTs({
@@ -126,18 +128,19 @@ const Index = () => {
       setAddresses([]);
       setSelectedNFTs([]);
 
-      // Show transaction link
+      // Show transaction link (use the last signature if multiple batches)
+      const lastSignature = signatures[signatures.length - 1];
       setTimeout(() => {
         toast.info(
           <div>
             <p className="font-medium">View transaction:</p>
             <a
-              href={`https://solscan.io/tx/${signature}`}
+              href={`https://solscan.io/tx/${lastSignature}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-primary underline text-sm"
             >
-              {signature.slice(0, 8)}...{signature.slice(-8)}
+              {lastSignature.slice(0, 8)}...{lastSignature.slice(-8)}
             </a>
           </div>,
           { duration: 10000 }
@@ -292,6 +295,7 @@ const Index = () => {
           nftType={nftType}
           selectedNFTs={selectedNFTs}
           onNFTsChange={setSelectedNFTs}
+          onNFTDataChange={setNftData}
         />
 
         {/* Send Button */}
