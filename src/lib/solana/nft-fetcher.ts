@@ -48,7 +48,7 @@ export async function fetchWalletNFTs(
       );
     }
 
-    console.log("🔗 Using Helius DAS endpoint:", heliusUrl);
+    console.log("🔗 Using Helius DAS endpoint:", "heliusUrl");
 
     const response = await withRateLimit(async () => {
       return await fetch(heliusUrl, {
@@ -126,7 +126,7 @@ export async function fetchWalletCNFTs(
       );
     }
 
-    console.log("🔗 Using Helius DAS endpoint:", heliusUrl);
+    console.log("🔗 Using Helius DAS endpoint:", "heliusUrl");
 
     const response = await withRateLimit(async () => {
       return await fetch(heliusUrl, {
@@ -223,7 +223,7 @@ export async function fetchAllWalletNFTs(
       );
     }
 
-    console.log("🔗 Using Helius DAS endpoint:", heliusUrl);
+    console.log("🔗 Using Helius DAS endpoint:", "heliusUrl");
 
     const response = await withRateLimit(async () => {
       return await fetch(heliusUrl, {
