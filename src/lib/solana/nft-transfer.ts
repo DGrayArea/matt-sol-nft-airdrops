@@ -11,29 +11,9 @@ import {
   getAccount,
 } from "@solana/spl-token";
 import { WalletContextState } from "@solana/wallet-adapter-react";
-import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
-import {
-  mplBubblegum,
-  getAssetWithProof,
-  transfer,
-} from "@metaplex-foundation/mpl-bubblegum";
-import { signerIdentity, publicKey } from "@metaplex-foundation/umi";
-import { dasApi } from "@metaplex-foundation/digital-asset-standard-api";
+import bs58 from "bs58";
 
-// SPL Program IDs for compressed NFTs
-const SPL_ACCOUNT_COMPRESSION_PROGRAM_ID = new PublicKey(
-  "cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK"
-);
-const SPL_NOOP_PROGRAM_ID = new PublicKey(
-  "noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV"
-);
-
-// Import Bubblegum transfer instruction
-import { getTransferInstructionDataSerializer } from "@metaplex-foundation/mpl-bubblegum";
-
-const BUBBLEGUM_PROGRAM_ID = new PublicKey(
-  "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY"
-);
+// Using SPL Account Compression for cNFT transfers
 
 interface TransferNFTParams {
   connection: Connection;
@@ -278,6 +258,7 @@ async function fetchIndividualAssetProof(
 }
 
 // SINGLE FUNCTION for compressed NFT transfers
+
 export async function transferCompressedNFTs({
   connection,
   wallet,
@@ -298,14 +279,42 @@ export async function transferCompressedNFTs({
 
   const signatures: string[] = [];
 
-  // Process one NFT at a time
+  // Bubblegum program ID
+  const BUBBLEGUM_PROGRAM_ID = new PublicKey(
+    "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY"
+  );
+
+  // SPL Account Compression program ID - ADD THIS BACK
+  const SPL_ACCOUNT_COMPRESSION_PROGRAM_ID = new PublicKey(
+    "cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK"
+  );
+
+  // SPL Noop program ID
+  const SPL_NOOP_PROGRAM_ID = new PublicKey(
+    "noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV"
+  );
+
+  // System program
+  const SYSTEM_PROGRAM_ID = new PublicKey("11111111111111111111111111111111");
+
+  // Prepare all transactions first
+  const transactions: Transaction[] = [];
+  const transactionData: Array<{
+    mint: string;
+    recipient: string;
+    assetData: any;
+    assetProof: any;
+  }> = [];
+
+  console.log(`🔄 Preparing ${nftMints.length} transactions...`);
+
+  // Fetch all asset data and proofs first
   for (let i = 0; i < nftMints.length; i++) {
     const mint = nftMints[i];
     const recipient = recipients[i];
 
-    console.log(`🔄 [${i + 1}/${nftMints.length}] Processing ${mint}`);
+    console.log(`🔄 [${i + 1}/${nftMints.length}] Preparing ${mint}`);
 
-    // Validate mint and recipient
     if (!mint || !recipient) {
       console.error(
         `❌ Invalid data at index ${i}: mint=${mint}, recipient=${recipient}`
@@ -327,7 +336,7 @@ export async function transferCompressedNFTs({
       // Verify ownership
       if (assetData.ownership.owner !== wallet.publicKey.toString()) {
         throw new Error(
-          `You don't own asset ${mint}. Owner: ${assetData.ownership.owner}, Expected: ${wallet.publicKey.toString()}`
+          `You don't own asset ${mint}. Owner: ${assetData.ownership.owner}`
         );
       }
 
@@ -337,189 +346,165 @@ export async function transferCompressedNFTs({
         !Array.isArray(assetProof.proof) ||
         assetProof.proof.length === 0
       ) {
-        throw new Error(
-          `Invalid proof structure for ${mint}: proof is empty or not an array`
-        );
+        throw new Error(`Invalid proof structure for ${mint}`);
       }
 
-      // Create transaction
-      const transaction = new Transaction();
-      const fromPubkey = wallet.publicKey;
-      const merkleTree = new PublicKey(assetData.compression.tree);
-      const toPubkey = new PublicKey(recipient);
+      // Store data for transaction building
+      transactionData.push({ mint, recipient, assetData, assetProof });
+    } catch (err: any) {
+      console.error(`❌ Failed to prepare ${mint}:`, err.message);
+      // Continue with next NFT
+    }
+  }
 
-      // Derive tree authority PDA
+  console.log(`📦 Prepared ${transactionData.length} valid transactions`);
+
+  // Build all transactions
+  for (const { mint, recipient, assetData, assetProof } of transactionData) {
+    try {
+      const fromPubkey = wallet.publicKey;
+      const toPubkey = new PublicKey(recipient);
+      const merkleTree = new PublicKey(assetData.compression.tree);
+
+      // Get tree authority PDA
       const [treeAuthority] = PublicKey.findProgramAddressSync(
         [merkleTree.toBuffer()],
         BUBBLEGUM_PROGRAM_ID
       );
 
-      // Create transfer instruction
-      const transferInstruction = new TransactionInstruction({
-        keys: [
-          { pubkey: treeAuthority, isSigner: false, isWritable: false },
-          { pubkey: fromPubkey, isSigner: true, isWritable: false },
-          {
-            pubkey: assetData.ownership.delegate
-              ? new PublicKey(assetData.ownership.delegate)
-              : fromPubkey,
-            isSigner: false,
-            isWritable: false,
-          },
-          { pubkey: toPubkey, isSigner: false, isWritable: false },
-          { pubkey: merkleTree, isSigner: false, isWritable: true },
-          { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
-          {
-            pubkey: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
-            isSigner: false,
-            isWritable: false,
-          },
-          {
-            pubkey: new PublicKey("11111111111111111111111111111111"),
-            isSigner: false,
-            isWritable: false,
-          },
-          ...assetProof.proof.map((p: string) => ({
-            pubkey: new PublicKey(p),
-            isSigner: false,
-            isWritable: false,
-          })),
-        ],
-        programId: BUBBLEGUM_PROGRAM_ID,
-        data: Buffer.from(
-          getTransferInstructionDataSerializer().serialize({
-            root: Buffer.from(assetProof.root, "base64"),
-            dataHash: Buffer.from(assetData.compression.data_hash, "base64"),
-            creatorHash: Buffer.from(
-              assetData.compression.creator_hash,
-              "base64"
-            ),
-            nonce: assetData.compression.leaf_id,
-            index: assetData.compression.leaf_id,
-          })
-        ),
+      console.log(`📋 Proof nodes for ${mint}: ${assetProof.proof.length}`);
+
+      // Map proof to PublicKeys (use all proof nodes)
+      const proofNodes = assetProof.proof.map((node: string) => {
+        return new PublicKey(node);
       });
 
+      // Transfer instruction discriminator from Bubblegum
+      const transferDiscriminator = Buffer.from([
+        163, 52, 200, 231, 140, 3, 69, 186,
+      ]);
+
+      // Build instruction data
+      const instructionData = Buffer.concat([
+        transferDiscriminator,
+        // Root - decode from base58 (DAS API returns base58, not base64)
+        Buffer.from(bs58.decode(assetProof.root)),
+        // Data hash - decode from base58
+        Buffer.from(bs58.decode(assetData.compression.data_hash)),
+        // Creator hash - decode from base58
+        Buffer.from(bs58.decode(assetData.compression.creator_hash)),
+        (() => {
+          // nonce as u64 (8 bytes, little-endian) - use leaf_id
+          const buf = Buffer.alloc(8);
+          buf.writeBigUInt64LE(BigInt(assetData.compression.leaf_id));
+          return buf;
+        })(),
+        (() => {
+          // index as u32 (4 bytes, little-endian) - also use leaf_id
+          const buf = Buffer.alloc(4);
+          buf.writeUInt32LE(assetData.compression.leaf_id);
+          return buf;
+        })(),
+      ]);
+
+      // Build instruction accounts - CORRECTED ORDER
+      const keys = [
+        // Tree authority (PDA)
+        { pubkey: treeAuthority, isSigner: false, isWritable: false },
+        // Leaf owner (current owner - must sign)
+        { pubkey: fromPubkey, isSigner: true, isWritable: false },
+        // Leaf delegate (current owner for now)
+        { pubkey: fromPubkey, isSigner: false, isWritable: false },
+        // New leaf owner (recipient)
+        { pubkey: toPubkey, isSigner: false, isWritable: false },
+        // Merkle tree
+        { pubkey: merkleTree, isSigner: false, isWritable: true },
+        // Log wrapper (Noop program)
+        { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
+        // Compression program - ADD THIS BACK IN THE CORRECT POSITION
+        {
+          pubkey: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+          isSigner: false,
+          isWritable: false,
+        },
+        // System program
+        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+        // Proof path (remaining accounts)
+        ...proofNodes.map((p: PublicKey) => ({
+          pubkey: p,
+          isSigner: false,
+          isWritable: false,
+        })),
+      ];
+
+      const transferInstruction = new TransactionInstruction({
+        keys,
+        programId: BUBBLEGUM_PROGRAM_ID,
+        data: instructionData,
+      });
+
+      // Create and configure transaction
+      const transaction = new Transaction();
       transaction.add(transferInstruction);
 
-      // Get latest blockhash
-      const { blockhash, lastValidBlockHeight } =
-        await connection.getLatestBlockhash();
-      transaction.recentBlockhash = blockhash;
-      transaction.feePayer = fromPubkey;
+      transactions.push(transaction);
+    } catch (err: any) {
+      console.error(`❌ Failed to build transaction for ${mint}:`, err.message);
+    }
+  }
 
-      // Sign and send transaction
-      const signed = await wallet.signTransaction(transaction);
+  console.log(`🚀 Signing and sending ${transactions.length} transactions...`);
+
+  // Get latest blockhash for all transactions
+  const { blockhash } = await connection.getLatestBlockhash();
+
+  // Set blockhash for all transactions
+  transactions.forEach((transaction) => {
+    transaction.recentBlockhash = blockhash;
+    transaction.feePayer = wallet.publicKey;
+  });
+
+  // Sign all transactions at once
+  const signedTransactions = await wallet.signAllTransactions(transactions);
+
+  // Send all transactions
+  for (let i = 0; i < signedTransactions.length; i++) {
+    try {
       const signature = await connection.sendRawTransaction(
-        signed.serialize(),
+        signedTransactions[i].serialize(),
         {
           skipPreflight: false,
           preflightCommitment: "confirmed",
         }
       );
 
-      // Confirm transaction
-      await connection.confirmTransaction(signature, "confirmed");
-
-      console.log(`✅ Transfer confirmed for ${mint}: ${signature}`);
+      console.log(`✅ Transaction ${i + 1} sent: ${signature}`);
       signatures.push(signature);
     } catch (err: any) {
-      console.error(`❌ Transfer failed for ${mint}:`, err.message);
-      // Continue with next NFT
+      console.error(`❌ Failed to send transaction ${i + 1}:`, err.message);
+      if (err.logs) {
+        console.error("Full error logs:", err.logs);
+      }
     }
-
-    // Small delay between transfers
-    if (i < nftMints.length - 1) await delay(1000);
   }
 
-  console.log(
-    `🎉 Successfully transferred ${signatures.length} out of ${nftMints.length} cNFTs`
-  );
-  return signatures;
-}
-
-export async function transferCompressedNFTsUmi({
-  connection,
-  wallet,
-  nftMints,
-  recipients,
-}: TransferNFTParams): Promise<string[]> {
-  if (!wallet.publicKey || !wallet.signTransaction) {
-    throw new Error("Wallet not connected");
-  }
-
-  if (nftMints.length !== recipients.length) {
-    throw new Error("Number of NFTs must match number of recipients");
-  }
-
-  console.log(
-    `🚀 Starting compressed NFT transfer of ${nftMints.length} cNFTs`
-  );
-
-  const signatures: string[] = [];
-
-  // Process one NFT at a time
-  for (let i = 0; i < nftMints.length; i++) {
-    const mint = nftMints[i];
-    const recipient = recipients[i];
-
-    console.log(`🔄 [${i + 1}/${nftMints.length}] Processing ${mint}`);
-
-    // Validate mint and recipient
-    if (!mint || !recipient) {
-      console.error(
-        `❌ Invalid data at index ${i}: mint=${mint}, recipient=${recipient}`
-      );
-      continue;
-    }
-
+  // Confirm all transactions
+  console.log(`⏳ Confirming ${signatures.length} transactions...`);
+  for (let i = 0; i < signatures.length; i++) {
     try {
-      // Fetch fresh asset data and proof
-      // Use the RPC endpoint of your choice.
-      // Construct a fresh Umi instance per transfer to avoid context issues
-      const umi = createUmi(import.meta.env.VITE_HELIUS_KEY)
-        .use(dasApi())
-        .use(mplBubblegum())
-        .use(
-          signerIdentity({
-            publicKey: publicKey(wallet.publicKey.toString()),
-            signMessage: async (message: Uint8Array) => {
-              const signature = await wallet.signMessage!(message);
-              return new Uint8Array(signature);
-            },
-            signTransaction: async (transaction: any) => {
-              return await wallet.signTransaction!(transaction);
-            },
-            signAllTransactions: async (transactions: any[]) => {
-              return await wallet.signAllTransactions!(transactions);
-            },
-          })
-        );
-
-      //currnet leaf owner
-      const assetWithProof = await getAssetWithProof(umi, mint, {
-        truncateCanopy: true,
-      });
-      await transfer(umi, {
-        ...assetWithProof,
-        leafOwner: publicKey(wallet.publicKey.toString()),
-        newLeafOwner: publicKey(recipient),
-      }).sendAndConfirm(umi);
-
-      //using a delegate
-      // const assetWithProof = await getAssetWithProof(umi, assetId, {truncateCanopy: true});
-      // await transfer(umi, {
-      //   ...assetWithProof,
-      //   leafDelegate: currentLeafDelegate,
-      //   newLeafOwner: newLeafOwner.publicKey,
-      // }).sendAndConfirm(umi)
+      await connection.confirmTransaction(
+        {
+          signature: signatures[i],
+          blockhash,
+          lastValidBlockHeight: (await connection.getLatestBlockhash())
+            .lastValidBlockHeight,
+        },
+        "confirmed"
+      );
+      console.log(`✅ Transaction ${i + 1} confirmed: ${signatures[i]}`);
     } catch (err: any) {
-      console.error(`❌ Transfer failed for ${mint}:`, err.message);
-      // Continue with next NFT
+      console.error(`❌ Failed to confirm transaction ${i + 1}:`, err.message);
     }
-
-    // Small delay between transfers
-    // if (i < nftMints.length - 1) await delay(1000);
   }
 
   console.log(
