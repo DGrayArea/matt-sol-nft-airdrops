@@ -26,6 +26,7 @@ import { toast } from "sonner";
 import {
   transferRegularNFTs,
   transferCompressedNFTs,
+  transferMultipleCompressedNFTs,
 } from "@/lib/solana/nft-transfer";
 
 const Index = () => {
@@ -71,54 +72,70 @@ const Index = () => {
     try {
       const connection = createConnection();
 
-      // Batch transfers based on transaction limits
-      const BATCH_SIZE = nftType === "cnft" ? 10 : 20; // cNFTs are more complex, fewer per batch
-      const batches = [];
-
-      for (let i = 0; i < selectedNFTs.length; i += BATCH_SIZE) {
-        const batchNFTs = selectedNFTs.slice(i, i + BATCH_SIZE);
-        const batchRecipients = addresses.slice(i, i + BATCH_SIZE);
-        batches.push({ nfts: batchNFTs, recipients: batchRecipients });
-      }
-
+      // For cNFTs, try to fit as many as possible per transaction
+      // For regular NFTs, use larger batches
+      let BATCH_SIZE = nftType === "cnft" ? 2 : 20; // Try 2 cNFTs per transaction first
       const signatures: string[] = [];
 
-      for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i];
+      if (nftType === "cnft") {
+        // Use sequential approach for ALL cNFT transfers with fresh proofs
         toast.loading(
-          `Sending batch ${i + 1}/${batches.length} (${batch.nfts.length} NFTs)...`,
+          `Processing ${selectedNFTs.length} cNFTs sequentially with fresh proofs...`,
           { id: toastId }
         );
 
-        let signature: string;
+        try {
+          const batchSignatures = await transferMultipleCompressedNFTs({
+            connection,
+            wallet,
+            nftMints: selectedNFTs.map((nft) => nft.mint),
+            recipients: addresses,
+          });
 
-        if (nftType === "cnft") {
-          signature = await transferCompressedNFTs({
-            connection,
-            wallet,
-            nftMints: batch.nfts,
-            recipients: batch.recipients,
-            nftMetadata: nftData, // Pass the full NFT metadata with cached asset data
-          });
-        } else {
-          signature = await transferRegularNFTs({
-            connection,
-            wallet,
-            nftMints: batch.nfts,
-            recipients: batch.recipients,
-          });
+          signatures.push(...batchSignatures);
+        } catch (error: any) {
+          console.error("Optimized batch transfer failed:", error);
+          throw new Error(`Batch transfer failed: ${error.message}`);
+        }
+      } else {
+        // Batch processing for regular NFTs
+        const batches = [];
+        for (let i = 0; i < selectedNFTs.length; i += BATCH_SIZE) {
+          const batchNFTs = selectedNFTs.slice(i, i + BATCH_SIZE);
+          const batchRecipients = addresses.slice(i, i + BATCH_SIZE);
+          batches.push({ nfts: batchNFTs, recipients: batchRecipients });
         }
 
-        signatures.push(signature);
+        for (let i = 0; i < batches.length; i++) {
+          const batch = batches[i];
+          toast.loading(
+            `Sending batch ${i + 1}/${batches.length} (${batch.nfts.length} NFTs)...`,
+            { id: toastId }
+          );
 
-        // Small delay between batches to avoid rate limits
-        if (i < batches.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+          const signature = await transferRegularNFTs({
+            connection,
+            wallet,
+            nftMints: batch.nfts,
+            recipients: batch.recipients,
+          });
+
+          signatures.push(signature);
+
+          // Small delay between batches to avoid rate limits
+          if (i < batches.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
         }
       }
 
       const batchInfo =
-        batches.length > 1 ? ` in ${batches.length} batches` : "";
+        nftType === "cnft"
+          ? ` (sequential transfer with fresh proofs)`
+          : signatures.length > 1
+            ? ` in ${signatures.length} batches`
+            : "";
+
       toast.success(
         `Successfully sent ${selectedNFTs.length} NFT${selectedNFTs.length !== 1 ? "s" : ""}${batchInfo}!`,
         { id: toastId }
@@ -129,23 +146,29 @@ const Index = () => {
       setSelectedNFTs([]);
 
       // Show transaction link (use the last signature if multiple batches)
-      const lastSignature = signatures[signatures.length - 1];
-      setTimeout(() => {
-        toast.info(
-          <div>
-            <p className="font-medium">View transaction:</p>
-            <a
-              href={`https://solscan.io/tx/${lastSignature}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-primary underline text-sm"
-            >
-              {lastSignature.slice(0, 8)}...{lastSignature.slice(-8)}
-            </a>
-          </div>,
-          { duration: 10000 }
+      if (signatures.length > 0) {
+        const lastSignature = signatures[signatures.length - 1];
+        setTimeout(() => {
+          toast.info(
+            <div>
+              <p className="font-medium">View transaction:</p>
+              <a
+                href={`https://solscan.io/tx/${lastSignature}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary underline text-sm"
+              >
+                {lastSignature.slice(0, 8)}...{lastSignature.slice(-8)}
+              </a>
+            </div>,
+            { duration: 10000 }
+          );
+        }, 500);
+      } else {
+        toast.error(
+          "No NFTs were transferred. All NFTs were skipped due to missing proof data."
         );
-      }, 500);
+      }
     } catch (error: any) {
       console.error("Error sending NFTs:", error);
       toast.error(error.message || "Failed to send NFTs. Please try again.", {
@@ -171,7 +194,7 @@ const Index = () => {
                 <Send className="h-5 w-5 text-primary-foreground" />
               </div>
               <span className="font-bold text-xl bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
-                Solana NFT Distributor
+                SOL NFT SENDER
               </span>
             </div>
             <WalletMultiButton />

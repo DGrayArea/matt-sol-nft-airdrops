@@ -13,6 +13,7 @@ import {
   getAccount,
 } from "@solana/spl-token";
 import { WalletContextState } from "@solana/wallet-adapter-react";
+// Removed Umi imports - using direct DAS API approach instead
 // SPL Program IDs for compressed NFTs (using known program IDs)
 const SPL_ACCOUNT_COMPRESSION_PROGRAM_ID = new PublicKey(
   "cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK"
@@ -23,6 +24,10 @@ const SPL_NOOP_PROGRAM_ID = new PublicKey(
 
 // Import Bubblegum transfer instruction
 import { getTransferInstructionDataSerializer } from "@metaplex-foundation/mpl-bubblegum";
+
+const BUBBLEGUM_PROGRAM_ID = new PublicKey(
+  "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY"
+);
 
 interface TransferNFTParams {
   connection: Connection;
@@ -183,8 +188,19 @@ function extractAssetDataFromMetadata(
 ): Record<string, any> {
   const assetDataMap: Record<string, any> = {};
 
+  console.log("🔍 Extracting asset data from metadata:");
+  console.log("NFT metadata count:", nftMetadata.length);
+  console.log("NFT mints to extract:", nftMints);
+
   nftMints.forEach((mint) => {
     const nft = nftMetadata.find((n) => n.mint === mint || n.id === mint);
+    console.log(`Looking for mint ${mint}:`, {
+      found: !!nft,
+      hasFullAssetData: !!(nft && nft.fullAssetData),
+      nftId: nft?.id,
+      nftMint: nft?.mint,
+    });
+
     if (nft && nft.fullAssetData) {
       assetDataMap[mint] = nft.fullAssetData;
     }
@@ -193,6 +209,7 @@ function extractAssetDataFromMetadata(
   console.log(
     `📦 Extracted ${Object.keys(assetDataMap).length} assets from cached metadata`
   );
+  console.log("Extracted asset IDs:", Object.keys(assetDataMap));
   return assetDataMap;
 }
 
@@ -221,13 +238,398 @@ function extractProofsFromMetadata(
   return proofMap;
 }
 
-export async function transferCompressedNFTs({
+// Helper: Rate-limited delay
+async function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Removed Umi helper function - using direct DAS API approach instead
+
+// Fetch with rate limiting
+async function fetchWithRateLimit<T>(
+  fetchFn: () => Promise<T>,
+  delayMs: number = 100 // 10 requests per second
+): Promise<T> {
+  const result = await fetchFn();
+  await delay(delayMs);
+  return result;
+}
+
+// OPTIMIZED: Batch fetch asset data with rate limiting
+async function fetchMultipleAssetDataRateLimited(
+  connection: Connection,
+  assetIds: string[],
+  batchSize: number = 100
+): Promise<Record<string, any>> {
+  const heliusUrl = import.meta.env.VITE_HELIUS_KEY;
+
+  if (!heliusUrl) {
+    throw new Error("Helius API key not configured");
+  }
+
+  // Split into batches if more than batchSize
+  const batches: string[][] = [];
+  for (let i = 0; i < assetIds.length; i += batchSize) {
+    batches.push(assetIds.slice(i, i + batchSize));
+  }
+
+  console.log(
+    `🔄 Fetching ${assetIds.length} assets in ${batches.length} batches`
+  );
+
+  const assetDataMap: Record<string, any> = {};
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    console.log(`📦 Batch ${i + 1}/${batches.length}: ${batch.length} assets`);
+
+    try {
+      const response = await fetchWithRateLimit(
+        () =>
+          fetch(heliusUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: `batch-${i}`,
+              method: "getAssetBatch",
+              params: { ids: batch },
+            }),
+          }),
+        200 // 200ms delay between batches
+      );
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(`Batch ${i + 1} error: ${data.error.message}`);
+      }
+
+      if (data.result && Array.isArray(data.result)) {
+        data.result.forEach((asset: any) => {
+          if (asset && asset.id) {
+            assetDataMap[asset.id] = asset;
+          }
+        });
+      }
+
+      console.log(
+        `✅ Batch ${i + 1} complete: ${Object.keys(assetDataMap).length} total`
+      );
+    } catch (error) {
+      console.error(`❌ Batch ${i + 1} failed:`, error);
+      throw error;
+    }
+  }
+
+  return assetDataMap;
+}
+
+// ALTERNATIVE: Try using Solana RPC directly for merkle tree data
+async function fetchMerkleTreeData(
+  connection: Connection,
+  merkleTreeId: string
+): Promise<any> {
+  console.log(`🔄 Fetching merkle tree data for ${merkleTreeId}...`);
+
+  try {
+    const merkleTreePubkey = new PublicKey(merkleTreeId);
+    const accountInfo = await connection.getAccountInfo(merkleTreePubkey);
+
+    if (!accountInfo) {
+      throw new Error(`Merkle tree account not found: ${merkleTreeId}`);
+    }
+
+    console.log(
+      `✅ Merkle tree account found, data length: ${accountInfo.data.length}`
+    );
+    return accountInfo;
+  } catch (error) {
+    console.error("Error fetching merkle tree data:", error);
+    throw error;
+  }
+}
+
+// FALLBACK: Try individual getAssetProof with different approach
+async function fetchAssetProofAlternative(
+  connection: Connection,
+  assetId: string
+): Promise<any> {
+  const heliusUrl = import.meta.env.VITE_HELIUS_KEY;
+
+  if (!heliusUrl) {
+    throw new Error("Helius API key not configured");
+  }
+
+  console.log(`🔄 Alternative proof fetch for ${assetId}...`);
+
+  try {
+    // Try with different parameters
+    const response = await fetch(heliusUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: `alt-proof-${Date.now()}`,
+        method: "getAssetProof",
+        params: {
+          id: assetId,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+
+    if (data.error) {
+      throw new Error(`DAS API error: ${data.error.message}`);
+    }
+
+    const result = data.result;
+
+    console.log(`🔍 Raw proof result for ${assetId}:`, result);
+
+    if (!result) {
+      throw new Error(`No result returned for ${assetId}`);
+    }
+
+    if (!result.proof) {
+      console.warn(
+        `⚠️ No proof field in result for ${assetId}:`,
+        Object.keys(result)
+      );
+      throw new Error(`No proof field for ${assetId}`);
+    }
+
+    if (!Array.isArray(result.proof)) {
+      console.warn(
+        `⚠️ Proof is not an array for ${assetId}:`,
+        typeof result.proof,
+        result.proof
+      );
+      throw new Error(
+        `Proof is not an array for ${assetId}: ${typeof result.proof}`
+      );
+    }
+
+    if (result.proof.length === 0) {
+      console.warn(`⚠️ Proof array is empty for ${assetId}`);
+      throw new Error(`Proof array is empty for ${assetId}`);
+    }
+
+    console.log(
+      `✅ Alternative proof fetch successful for ${assetId}, proof length: ${result.proof.length}`
+    );
+    return result;
+  } catch (error) {
+    console.error(`Error alternative proof fetch for ${assetId}:`, error);
+    throw error;
+  }
+}
+
+// BATCH: Fetch proofs using alternative method
+async function fetchAssetProofsBatch(
+  connection: Connection,
+  assetIds: string[]
+): Promise<Record<string, any>> {
+  console.log(
+    `🔄 Alternative batch fetching proofs for ${assetIds.length} assets...`
+  );
+
+  const proofMap: Record<string, any> = {};
+
+  // Try fetching proofs one by one with alternative method
+  for (const assetId of assetIds) {
+    try {
+      const proof = await fetchAssetProofAlternative(connection, assetId);
+      proofMap[assetId] = { id: assetId, ...proof };
+
+      // Small delay between requests
+      await delay(100);
+    } catch (error) {
+      console.error(`Failed to fetch proof for ${assetId}:`, error);
+      // Continue with other assets
+    }
+  }
+
+  console.log(
+    `✅ Alternative batch fetched ${Object.keys(proofMap).length} proofs`
+  );
+  return proofMap;
+}
+
+// SIMPLE: Prepare transaction with batch-fetched data (no retries)
+export async function prepareCompressedNFTTransactionSimple({
+  connection,
+  wallet,
+  nftMint,
+  recipient,
+  assetData,
+  assetProof,
+}: {
+  connection: Connection;
+  wallet: WalletContextState;
+  nftMint: string;
+  recipient: string;
+  assetData: any;
+  assetProof: any;
+}): Promise<Transaction> {
+  if (!wallet.publicKey || !wallet.signTransaction) {
+    throw new Error("Wallet not connected");
+  }
+
+  const transaction = new Transaction();
+  const fromPubkey = wallet.publicKey;
+
+  console.log(`🔄 Preparing transaction for ${nftMint}...`);
+
+  // Verify ownership
+  if (assetData.ownership.owner !== fromPubkey.toString()) {
+    throw new Error(
+      `You don't own asset ${nftMint}. Owner: ${assetData.ownership.owner}, Expected: ${fromPubkey.toString()}`
+    );
+  }
+
+  // Debug: Log key details
+  console.log(`🔍 Transaction data for ${nftMint}:`);
+  console.log(`  Asset Owner: ${assetData.ownership.owner}`);
+  console.log(`  Wallet Pubkey: ${fromPubkey.toString()}`);
+  console.log(`  Merkle Tree: ${assetData.compression.tree}`);
+  console.log(`  Leaf ID: ${assetData.compression.leaf_id}`);
+  console.log(`  Proof Root: ${assetProof.root}`);
+  console.log(`  Proof Tree ID: ${assetProof.tree_id}`);
+  console.log(`  Proof Node Index: ${assetProof.node_index}`);
+  console.log(`  Proof Nodes Count: ${assetProof.proof.length}`);
+  console.log(`  Data Hash: ${assetData.compression.data_hash}`);
+  console.log(`  Creator Hash: ${assetData.compression.creator_hash}`);
+  console.log(`  Asset Hash: ${assetData.compression.asset_hash}`);
+  console.log(`  Leaf: ${assetProof.leaf}`);
+  console.log(`  Last Indexed Slot: ${assetProof.last_indexed_slot}`);
+
+  // Validate proof structure
+  if (
+    !assetProof.proof ||
+    !Array.isArray(assetProof.proof) ||
+    assetProof.proof.length === 0
+  ) {
+    throw new Error(
+      `Invalid proof structure for ${nftMint}: proof is empty or not an array`
+    );
+  }
+
+  const merkleTree = new PublicKey(assetData.compression.tree);
+  const toPubkey = new PublicKey(recipient);
+
+  // Try different tree authority derivations
+  let treeAuthority: PublicKey;
+  try {
+    // Method 1: Standard derivation
+    [treeAuthority] = PublicKey.findProgramAddressSync(
+      [merkleTree.toBuffer()],
+      BUBBLEGUM_PROGRAM_ID
+    );
+    console.log(
+      `🔍 Using standard tree authority: ${treeAuthority.toString()}`
+    );
+  } catch (error) {
+    console.warn(
+      "Standard tree authority derivation failed, trying alternative..."
+    );
+    // Method 2: Alternative derivation
+    [treeAuthority] = PublicKey.findProgramAddressSync(
+      [Buffer.from("tree_authority"), merkleTree.toBuffer()],
+      BUBBLEGUM_PROGRAM_ID
+    );
+    console.log(
+      `🔍 Using alternative tree authority: ${treeAuthority.toString()}`
+    );
+  }
+
+  // Check if tree authority account exists
+  try {
+    const treeAuthorityInfo = await connection.getAccountInfo(treeAuthority);
+    if (!treeAuthorityInfo) {
+      throw new Error(
+        `Tree authority account not found: ${treeAuthority.toString()}`
+      );
+    }
+    console.log(
+      `✅ Tree authority account exists: ${treeAuthority.toString()}`
+    );
+  } catch (error) {
+    console.error(`❌ Tree authority account check failed:`, error);
+    throw error;
+  }
+
+  const transferInstruction = new TransactionInstruction({
+    keys: [
+      { pubkey: treeAuthority, isSigner: false, isWritable: false },
+      { pubkey: fromPubkey, isSigner: true, isWritable: false },
+      {
+        pubkey: assetData.ownership.delegate
+          ? new PublicKey(assetData.ownership.delegate)
+          : fromPubkey,
+        isSigner: false,
+        isWritable: false,
+      },
+      { pubkey: toPubkey, isSigner: false, isWritable: false },
+      { pubkey: merkleTree, isSigner: false, isWritable: true },
+      { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
+      {
+        pubkey: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+        isSigner: false,
+        isWritable: false,
+      },
+      {
+        pubkey: new PublicKey("11111111111111111111111111111111"),
+        isSigner: false,
+        isWritable: false,
+      },
+      ...assetProof.proof.map((p: string) => ({
+        pubkey: new PublicKey(p),
+        isSigner: false,
+        isWritable: false,
+      })),
+    ],
+    programId: BUBBLEGUM_PROGRAM_ID,
+    data: Buffer.from(
+      getTransferInstructionDataSerializer().serialize({
+        root: Buffer.from(assetProof.root, "base64"),
+        dataHash: Buffer.from(assetData.compression.data_hash, "base64"),
+        creatorHash: Buffer.from(assetData.compression.creator_hash, "base64"),
+        nonce: assetData.compression.leaf_id,
+        index: assetData.compression.leaf_id,
+      })
+    ),
+  });
+
+  transaction.add(transferInstruction);
+
+  const { blockhash, lastValidBlockHeight } =
+    await connection.getLatestBlockhash();
+  transaction.recentBlockhash = blockhash;
+  transaction.feePayer = fromPubkey;
+
+  return transaction;
+}
+
+// SIMPLIFIED: Transfer multiple cNFTs using direct DAS API (no Umi)
+export async function transferMultipleCompressedNFTs({
   connection,
   wallet,
   nftMints,
   recipients,
-  nftMetadata, // Add optional NFT metadata with full asset data
-}: TransferNFTParams & { nftMetadata?: any[] }): Promise<string> {
+}: {
+  connection: Connection;
+  wallet: WalletContextState;
+  nftMints: string[];
+  recipients: string[];
+}): Promise<string[]> {
   if (!wallet.publicKey || !wallet.signTransaction) {
     throw new Error("Wallet not connected");
   }
@@ -236,161 +638,161 @@ export async function transferCompressedNFTs({
     throw new Error("Number of NFTs must match number of recipients");
   }
 
+  console.log(
+    `🚀 Starting direct DAS API transfer of ${nftMints.length} cNFTs`
+  );
+
+  const signatures: string[] = [];
+
+  // Process one NFT at a time using direct DAS API
+  for (let i = 0; i < nftMints.length; i++) {
+    const mint = nftMints[i];
+    const recipient = recipients[i];
+
+    console.log(`🔄 [${i + 1}/${nftMints.length}] Processing ${mint}`);
+
+    try {
+      // Fetch fresh asset data and proof
+      const [assetData, assetProof] = await Promise.all([
+        fetchIndividualAssetData(connection, mint),
+        fetchIndividualAssetProof(connection, mint),
+      ]);
+
+      if (!assetData || !assetProof) {
+        throw new Error(`Failed to fetch data for asset ${mint}`);
+      }
+
+      // Prepare transaction using the simple approach
+      const transaction = await prepareCompressedNFTTransactionSimple({
+        connection,
+        wallet,
+        nftMint: mint,
+        recipient,
+        assetData,
+        assetProof,
+      });
+
+      // Sign and send transaction
+      const signed = await wallet.signTransaction(transaction);
+      const signature = await connection.sendRawTransaction(
+        signed.serialize(),
+        {
+          skipPreflight: false,
+          preflightCommitment: "confirmed",
+        }
+      );
+
+      // Confirm transaction
+      await connection.confirmTransaction(signature, "confirmed");
+
+      console.log(`✅ Transfer confirmed for ${mint}: ${signature}`);
+      signatures.push(signature);
+    } catch (err: any) {
+      console.error(`❌ Transfer failed for ${mint}:`, err.message);
+      // Continue with next NFT
+    }
+
+    // Small delay between transfers
+    if (i < nftMints.length - 1) await delay(1000);
+  }
+
+  console.log(
+    `🎉 Successfully transferred ${signatures.length} out of ${nftMints.length} cNFTs`
+  );
+  return signatures;
+}
+
+// SIMPLE: Prepare single cNFT transaction (for small batches)
+export async function prepareCompressedNFTTransaction({
+  connection,
+  wallet,
+  nftMint,
+  recipient,
+  nftMetadata,
+}: {
+  connection: Connection;
+  wallet: WalletContextState;
+  nftMint: string;
+  recipient: string;
+  nftMetadata?: any[];
+}): Promise<Transaction> {
+  if (!wallet.publicKey || !wallet.signTransaction) {
+    throw new Error("Wallet not connected");
+  }
+
   const transaction = new Transaction();
   const fromPubkey = wallet.publicKey;
 
-  // Check if we have full asset data from the initial fetch
-  const hasFullAssetData =
-    nftMetadata &&
-    nftMetadata.length > 0 &&
-    nftMetadata.some((nft) => nft.fullAssetData);
+  // Fetch fresh data for single transaction
+  console.log("🔄 Fetching fresh asset data and proof...");
 
-  // Check if proofs are also available in cached data
-  const hasCachedProofs =
-    hasFullAssetData && nftMetadata.some((nft) => nft.fullAssetData?.proof);
+  const [assetData, assetProof] = await Promise.all([
+    fetchIndividualAssetData(connection, nftMint),
+    fetchIndividualAssetProof(connection, nftMint),
+  ]);
 
-  if (hasFullAssetData) {
-    console.log(
-      `✅ Using cached asset data from initial fetch for ${nftMints.length} cNFTs`
-    );
-
-    if (hasCachedProofs) {
-      console.log(
-        `🎉 Proofs also available in cached data - zero additional API calls needed!`
-      );
-    } else {
-      console.log(`⚠️ Proofs not in cached data, will fetch via batch API`);
-    }
-  } else {
-    console.log(`🔄 Batch fetching data for ${nftMints.length} cNFTs...`);
-
-    // Show progress for large batches
-    if (nftMints.length > 10) {
-      console.log(
-        `⏳ This may take a moment for ${nftMints.length} NFTs to avoid rate limits...`
-      );
-    }
+  if (!assetData || !assetProof) {
+    throw new Error(`Failed to fetch data for asset ${nftMint}`);
   }
 
-  // Use cached data if available, otherwise fetch via batch APIs
-  const [assetDataMap, assetProofMap] = hasFullAssetData
-    ? await Promise.all([
-        // Extract asset data from cached metadata
-        Promise.resolve(extractAssetDataFromMetadata(nftMetadata!, nftMints)),
-        // Extract proofs from cached data if available, otherwise fetch
-        hasCachedProofs
-          ? Promise.resolve(extractProofsFromMetadata(nftMetadata!, nftMints))
-          : fetchMultipleAssetProofs(connection, nftMints),
-      ])
-    : await Promise.all([
-        fetchMultipleAssetData(connection, nftMints),
-        fetchMultipleAssetProofs(connection, nftMints),
-      ]);
+  // Verify ownership
+  if (assetData.ownership.owner !== fromPubkey.toString()) {
+    throw new Error(`You don't own asset ${nftMint}`);
+  }
 
-  console.log(`✅ Fetched data for ${Object.keys(assetDataMap).length} assets`);
-  console.log(
-    `✅ Fetched proofs for ${Object.keys(assetProofMap).length} assets`
+  const merkleTree = new PublicKey(assetData.compression.tree);
+  const toPubkey = new PublicKey(recipient);
+
+  // Derive tree authority PDA
+  const [treeAuthority] = PublicKey.findProgramAddressSync(
+    [merkleTree.toBuffer()],
+    BUBBLEGUM_PROGRAM_ID
   );
 
-  // Check if we got all the data we need
-  const missingData = nftMints.filter((id) => !assetDataMap[id]);
-  const missingProofs = nftMints.filter((id) => !assetProofMap[id]);
+  // Create transfer instruction
+  const transferInstruction = new TransactionInstruction({
+    keys: [
+      { pubkey: treeAuthority, isSigner: false, isWritable: false },
+      { pubkey: fromPubkey, isSigner: true, isWritable: false },
+      {
+        pubkey: assetData.ownership.delegate
+          ? new PublicKey(assetData.ownership.delegate)
+          : fromPubkey,
+        isSigner: false,
+        isWritable: false,
+      },
+      { pubkey: toPubkey, isSigner: false, isWritable: false },
+      { pubkey: merkleTree, isSigner: false, isWritable: true },
+      { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
+      {
+        pubkey: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
+        isSigner: false,
+        isWritable: false,
+      },
+      {
+        pubkey: new PublicKey("11111111111111111111111111111111"),
+        isSigner: false,
+        isWritable: false,
+      },
+      ...assetProof.proof.map((p: string) => ({
+        pubkey: new PublicKey(p),
+        isSigner: false,
+        isWritable: false,
+      })),
+    ],
+    programId: BUBBLEGUM_PROGRAM_ID,
+    data: Buffer.from(
+      getTransferInstructionDataSerializer().serialize({
+        root: Buffer.from(assetProof.root, "base64"),
+        dataHash: Buffer.from(assetData.compression.data_hash, "base64"),
+        creatorHash: Buffer.from(assetData.compression.creator_hash, "base64"),
+        nonce: assetData.compression.leaf_id,
+        index: assetData.compression.leaf_id,
+      })
+    ),
+  });
 
-  if (missingData.length > 0) {
-    console.warn(
-      `⚠️ Missing data for ${missingData.length} assets:`,
-      missingData
-    );
-  }
-  if (missingProofs.length > 0) {
-    console.warn(
-      `⚠️ Missing proofs for ${missingProofs.length} assets:`,
-      missingProofs
-    );
-  }
-
-  // Process each cNFT transfer
-  for (let i = 0; i < nftMints.length; i++) {
-    const assetId = nftMints[i];
-    const toPubkey = new PublicKey(recipients[i]);
-
-    try {
-      // Get pre-fetched asset data and proof
-      const assetData = assetDataMap[assetId];
-      const assetProof = assetProofMap[assetId];
-
-      if (!assetData || !assetProof) {
-        throw new Error(`Failed to fetch data for asset ${assetId}`);
-      }
-
-      // Verify ownership
-      if (assetData.ownership.owner !== fromPubkey.toString()) {
-        throw new Error(`You don't own asset ${assetId}`);
-      }
-
-      // Create the proper Bubblegum transfer instruction
-      const merkleTree = new PublicKey(assetData.compression.tree);
-      const treeConfig = PublicKey.findProgramAddressSync(
-        [Buffer.from("tree-config"), merkleTree.toBuffer()],
-        new PublicKey("BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY")
-      )[0];
-
-      const transferInstruction = new TransactionInstruction({
-        keys: [
-          { pubkey: treeConfig, isSigner: false, isWritable: false },
-          { pubkey: fromPubkey, isSigner: true, isWritable: false },
-          {
-            pubkey: assetData.ownership.delegate
-              ? new PublicKey(assetData.ownership.delegate)
-              : fromPubkey,
-            isSigner: false,
-            isWritable: false,
-          },
-          { pubkey: toPubkey, isSigner: false, isWritable: false },
-          { pubkey: merkleTree, isSigner: false, isWritable: true },
-          { pubkey: SPL_NOOP_PROGRAM_ID, isSigner: false, isWritable: false },
-          {
-            pubkey: SPL_ACCOUNT_COMPRESSION_PROGRAM_ID,
-            isSigner: false,
-            isWritable: false,
-          },
-          {
-            pubkey: new PublicKey("11111111111111111111111111111111"),
-            isSigner: false,
-            isWritable: false,
-          }, // System Program
-          // Add proof accounts
-          ...assetProof.proof.map((p: string) => ({
-            pubkey: new PublicKey(p),
-            isSigner: false,
-            isWritable: false,
-          })),
-        ],
-        programId: new PublicKey(
-          "BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY"
-        ), // Bubblegum program
-        data: Buffer.from(
-          getTransferInstructionDataSerializer().serialize({
-            root: Buffer.from(assetProof.root, "base64"),
-            dataHash: Buffer.from(assetData.compression.data_hash, "base64"),
-            creatorHash: Buffer.from(
-              assetData.compression.creator_hash,
-              "base64"
-            ),
-            nonce: assetData.compression.leaf_id,
-            index: assetData.compression.leaf_id,
-          })
-        ),
-      });
-
-      transaction.add(transferInstruction);
-    } catch (error) {
-      console.error(`Error preparing transfer for asset ${assetId}:`, error);
-      throw new Error(
-        `Failed to prepare transfer for asset ${assetId}: ${error.message}`
-      );
-    }
-  }
+  transaction.add(transferInstruction);
 
   // Get latest blockhash
   const { blockhash, lastValidBlockHeight } =
@@ -398,138 +800,164 @@ export async function transferCompressedNFTs({
   transaction.recentBlockhash = blockhash;
   transaction.feePayer = fromPubkey;
 
-  // Sign and send transaction with retry logic
-  let signature: string;
-  let retries = 3;
+  return transaction;
+}
 
-  while (retries > 0) {
-    try {
-      const signed = await wallet.signTransaction(transaction);
-      signature = await connection.sendRawTransaction(signed.serialize(), {
-        skipPreflight: false,
-        preflightCommitment: "confirmed",
-      });
+// LEGACY: Keep old function for backward compatibility (single transaction)
+export async function transferCompressedNFTs({
+  connection,
+  wallet,
+  nftMints,
+  recipients,
+  nftMetadata,
+}: TransferNFTParams & { nftMetadata?: any[] }): Promise<string> {
+  // For single NFT, use the simple approach
+  if (nftMints.length === 1) {
+    const transaction = await prepareCompressedNFTTransaction({
+      connection,
+      wallet,
+      nftMint: nftMints[0],
+      recipient: recipients[0],
+      nftMetadata,
+    });
 
-      // Confirm transaction with timeout
-      await connection.confirmTransaction(
-        {
-          signature,
-          blockhash,
-          lastValidBlockHeight,
+    const signed = await wallet.signTransaction(transaction);
+    const signature = await connection.sendRawTransaction(signed.serialize(), {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+    });
+
+    await connection.confirmTransaction(signature, "confirmed");
+    return signature;
+  }
+
+  // For multiple NFTs, use the optimized approach
+  const signatures = await transferMultipleCompressedNFTs({
+    connection,
+    wallet,
+    nftMints,
+    recipients,
+  });
+
+  return signatures[0]; // Return first signature for backward compatibility
+}
+
+// Fallback functions for individual API calls
+async function fetchIndividualAssetData(
+  connection: Connection,
+  assetId: string
+): Promise<any> {
+  try {
+    const heliusUrl = import.meta.env.VITE_HELIUS_KEY;
+
+    if (!heliusUrl) {
+      throw new Error("Helius API key not configured");
+    }
+
+    const response = await fetch(heliusUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "individual-asset-data",
+        method: "getAsset",
+        params: {
+          id: assetId,
         },
-        "confirmed"
+      }),
+    });
+
+    const data = await response.json();
+    return data.result;
+  } catch (error) {
+    console.error(
+      `Error fetching individual asset data for ${assetId}:`,
+      error
+    );
+    return null;
+  }
+}
+
+async function fetchIndividualAssetProof(
+  connection: Connection,
+  assetId: string,
+  maxRetries: number = 3
+): Promise<any> {
+  const heliusUrl = import.meta.env.VITE_HELIUS_KEY;
+
+  if (!heliusUrl) {
+    throw new Error("Helius API key not configured");
+  }
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(
+        `🔄 Fetching proof for ${assetId} (attempt ${attempt}/${maxRetries})`
       );
 
-      break;
-    } catch (error) {
-      retries--;
-      if (retries === 0) {
-        throw new Error(
-          `Transaction failed after 3 attempts: ${error.message}`
+      const response = await fetch(heliusUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: `individual-asset-proof-${attempt}`,
+          method: "getAssetProof",
+          params: {
+            id: assetId,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(`DAS API error: ${data.error.message}`);
+      }
+
+      const result = data.result;
+
+      // Validate proof structure
+      if (
+        !result ||
+        !result.root ||
+        !result.proof ||
+        !Array.isArray(result.proof)
+      ) {
+        throw new Error(`Invalid proof structure for ${assetId}`);
+      }
+
+      // Check if proof is recent (within last 10 slots)
+      const currentSlot = await connection.getSlot();
+      const proofAge = currentSlot - result.last_indexed_slot;
+      if (proofAge > 10) {
+        console.warn(
+          `⚠️ Proof is ${proofAge} slots old for ${assetId}, may be stale`
         );
       }
-      console.warn(
-        `Transaction attempt failed, retrying... (${retries} attempts left)`
+
+      console.log(
+        `✅ Successfully fetched proof for ${assetId} (attempt ${attempt})`
       );
-      await new Promise((resolve) => setTimeout(resolve, 1000)); // Wait 1 second before retry
+      return result;
+    } catch (error) {
+      console.error(`❌ Attempt ${attempt} failed for ${assetId}:`, error);
+
+      if (attempt === maxRetries) {
+        throw new Error(
+          `Failed to fetch proof for ${assetId} after ${maxRetries} attempts: ${error.message}`
+        );
+      }
+
+      // Wait before retry
+      await delay(1000 * attempt); // Exponential backoff
     }
-  }
-
-  return signature;
-}
-
-// Helper function to fetch multiple asset data using Helius getAssetBatch API
-async function fetchMultipleAssetData(
-  connection: Connection,
-  assetIds: string[]
-): Promise<Record<string, AssetData>> {
-  try {
-    console.log(`🔄 Using Helius getAssetBatch for ${assetIds.length} assets`);
-
-    const response = await fetch(connection.rpcEndpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "batch-asset-data",
-        method: "getAssetBatch",
-        params: {
-          ids: assetIds,
-        },
-      }),
-    });
-
-    const { result } = await response.json();
-    console.log("📊 getAssetBatch response:", {
-      success: result?.length || 0,
-      total: assetIds.length,
-      failed: assetIds.length - (result?.length || 0),
-    });
-
-    // Convert array to object keyed by asset ID
-    const assetDataMap: Record<string, AssetData> = {};
-    if (result && Array.isArray(result)) {
-      result.forEach((asset: AssetData) => {
-        if (asset && asset.id) {
-          assetDataMap[asset.id] = asset;
-        }
-      });
-    }
-
-    return assetDataMap;
-  } catch (error) {
-    console.error("Error fetching batch asset data:", error);
-    return {};
-  }
-}
-
-// Helper function to fetch multiple asset proofs using Helius getAssetProofBatch API
-async function fetchMultipleAssetProofs(
-  connection: Connection,
-  assetIds: string[]
-): Promise<Record<string, any>> {
-  try {
-    console.log(
-      `🔄 Using Helius getAssetProofBatch for ${assetIds.length} assets`
-    );
-
-    const response = await fetch(connection.rpcEndpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "batch-asset-proofs",
-        method: "getAssetProofBatch",
-        params: {
-          ids: assetIds,
-        },
-      }),
-    });
-
-    const { result } = await response.json();
-    console.log("📊 getAssetProofBatch response:", {
-      success: result?.length || 0,
-      total: assetIds.length,
-      failed: assetIds.length - (result?.length || 0),
-    });
-
-    // Convert array to object keyed by asset ID
-    const proofMap: Record<string, any> = {};
-    if (result && Array.isArray(result)) {
-      result.forEach((proof: any) => {
-        if (proof && proof.id) {
-          proofMap[proof.id] = proof;
-        }
-      });
-    }
-
-    return proofMap;
-  } catch (error) {
-    console.error("Error fetching batch asset proofs:", error);
-    return {};
   }
 }
