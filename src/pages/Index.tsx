@@ -26,7 +26,6 @@ import { toast } from "sonner";
 import {
   transferRegularNFTs,
   transferCompressedNFTs,
-  transferMultipleCompressedNFTs,
 } from "@/lib/solana/nft-transfer";
 
 const Index = () => {
@@ -85,10 +84,13 @@ const Index = () => {
         );
 
         try {
-          const batchSignatures = await transferMultipleCompressedNFTs({
+          // Debug: Check selectedNFTs structure
+          console.log("🔍 Selected NFTs:", selectedNFTs);
+
+          const batchSignatures = await transferCompressedNFTs({
             connection,
             wallet,
-            nftMints: selectedNFTs.map((nft) => nft.mint),
+            nftMints: selectedNFTs, // selectedNFTs already contains the mint addresses
             recipients: addresses,
           });
 
